@@ -6,6 +6,7 @@ This works on template-haskell-2.9.0.0 but not template-haskell-2.10.0.0
 Missing features and limitations:
  - 'nameBase' should be part of the default renamer
  - We are limited to a single non-parametric type
+ - We don't handle 'newtype' and 'type' synonyms.
  - We don't handle type functions
  - We our variable names are not hygienic
  - We should add a function over Applicative
