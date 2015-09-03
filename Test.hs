@@ -6,9 +6,9 @@ import qualified Test0
 import Language.Haskell.TH
 
 defineData [
-  TypeDelta ''Test0.Foo "forward" "backward" (\x -> Just $ mkName ("F" ++ nameBase x))
+  TypeDelta ''Test0.Foo "forward" "backward" (Just . mkName . ("F" ++) . nameBase)
               ['Test0.Bar]
-              [d|data Quux = Wibble|]]
+              [d|data Quux = Wibble deriving (Show)|]]
 
 g :: Quux -> Integer
 g Wibble = 3
