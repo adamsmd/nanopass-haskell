@@ -4,12 +4,6 @@ module Nanopass where
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 
--- Rename types found in children
--- 'Getting' the name 'base'
--- Error checking of invocation syntax
--- Add monadic (or applicative) transformer
--- better error message when translating
-
 data TypeDelta =
   TypeDelta { oldType :: Name,
               forwardFunction :: String,
@@ -30,11 +24,7 @@ defineData [td@TypeDelta {}] = do
                       oldCon <- oldCons,
                       Just newCon <- [renameCon rename oldCon]] ++
                      [(addedCon, Nothing) | addedCon <- addedCons]
-      newCons = [renameArgs oldTypeName newTypeName newCon |
-                 oldCon <- oldCons,
-                 Just newCon <- [renameCon rename oldCon]] ++
-                addedCons
-  return [DataD newCxt newTypeName newTyVarBndr newCons newDeriving,
+  return [DataD newCxt newTypeName newTyVarBndr (map fst backwardCons) newDeriving,
           SigD (mkName (forwardFunction td))
                  (ArrowT `AppT` (ArrowT `AppT` ConT oldTypeName `AppT` ConT newTypeName)
                          `AppT` (ArrowT `AppT` ConT oldTypeName `AppT` ConT newTypeName)),
@@ -44,17 +34,11 @@ defineData [td@TypeDelta {}] = do
                          `AppT` (ArrowT `AppT` ConT newTypeName `AppT` ConT oldTypeName)),
           FunD (mkName (backwardFunction td)) (translateFun newTypeName backwardCons)]
 
-removeCons :: [Name] -> [Con] -> [Con]
-removeCons ns cs = foldr removeCon cs ns
-
-removeCon :: Name -> [Con] -> [Con]
-removeCon n = filter (not . isConName n)
-
-isConName :: Name -> Con -> Bool
-isConName n (NormalC n' _) = n == n'
-isConName n (RecC n' _) = n == n'
-isConName n (InfixC _ n' _) = n == n'
-isConName n (ForallC _ _ c) = isConName n c
+conName :: Con -> Name
+conName (NormalC n _) = n
+conName (RecC n _) = n
+conName (InfixC _ n _) = n
+conName (ForallC _ _ c) = conName c
 
 renameArgs :: Name -> Name -> Con -> Con
 renameArgs oldTypeName newTypeName = go where
@@ -65,8 +49,10 @@ renameArgs oldTypeName newTypeName = go where
 
 renameNameStrictType :: Name -> Name -> VarStrictType -> VarStrictType
 renameNameStrictType oldTypeName newTypeName (n, s, t) = (n, s, renameType oldTypeName newTypeName t)
+
 renameStrictType :: Name -> Name -> StrictType -> StrictType
 renameStrictType oldTypeName newTypeName (s, t) = (s, renameType oldTypeName newTypeName t)
+
 renameType :: Name -> Name -> Type -> Type
 renameType oldTypeName newTypeName = go where
   go (ConT n) | n == oldTypeName = ConT newTypeName
@@ -75,8 +61,10 @@ renameType oldTypeName newTypeName = go where
   go (AppT t1 t2) = AppT (go t1) (go t2)
   go (SigT t k) = SigT (go t) k
   go t = t
+
 renameCxt :: Name -> Name -> Cxt -> Cxt
 renameCxt oldTypeName newTypeName x = map (renamePred oldTypeName newTypeName) x
+
 renamePred :: Name -> Name -> Pred -> Pred
 renamePred oldTypeName newTypeName (ClassP c ts) = ClassP c (map (renameType oldTypeName newTypeName) ts)
 renamePred oldTypeName newTypeName (EqualP t1 t2) = EqualP (renameType oldTypeName newTypeName t1) (renameType oldTypeName newTypeName t2)
@@ -90,7 +78,7 @@ renameCon f con = case f (conName con) of
                       go (InfixC t1 _ t2) = InfixC t1 n t2
                       go (ForallC xs c con') = ForallC xs c (go con')
 
--- Implements the translation function
+-- Implements the forward and backward translation functions
 translateFun :: Name -> [(Con, Maybe Name)] -> [Clause]
 translateFun oldTypeName cons = [Clause [VarP fName, VarP x] (NormalB (AppE (VarE go) (VarE x))) [FunD go (map (translate f) cons)]] where
   f t' | ConT oldTypeName == t' = Just fName
@@ -109,9 +97,3 @@ translate f (NormalC n ts, n') = Clause [ConP n (map (VarP . fst) args)] (Normal
 translate f (RecC n ts, n') = translate f (NormalC n (map (\(_, x, y) -> (x, y)) ts), n')
 translate f (InfixC t1 n t2, n') = translate f (NormalC n [t1, t2], n')
 translate f (ForallC _xs _c con, n') = translate f (con, n')
-
-conName :: Con -> Name
-conName (NormalC n _) = n
-conName (RecC n _) = n
-conName (InfixC _ n _) = n
-conName (ForallC _ _ c) = conName c
