@@ -4,10 +4,10 @@ module Test where
 import Nanopass
 import qualified Test0
 import Language.Haskell.TH
+import Control.Monad
 
 defineData [
-  TypeDelta ''Test0.Foo "forward" "backward" (Just . mkName . ("F" ++) . nameBase)
-              ['Test0.Bar]
+  TypeDelta ''Test0.Foo "forward" "backward" (removeCons ['Test0.Bar] >=> (Just . mkName . ("F" ++) . nameBase))
               [d|data Quux = Wibble deriving (Show)|]]
 
 g :: Quux -> Integer

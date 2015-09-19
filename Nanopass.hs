@@ -9,20 +9,18 @@ data TypeDelta =
               forwardFunction :: String,
               backwardFunction :: String,
               nameMangler :: Name -> Maybe Name,
-              removedConstructors :: [Name],
               newType :: Q [Dec] } |
   TypeDeltaNop { noOpOldType :: Name, noOpNewType :: Name }
 
+-- TODO: redefineType
 defineData :: [TypeDelta] -> Q [Dec]
 defineData [td@TypeDelta {}] = do
   TyConI (DataD _oldCxt oldTypeName _oldTyVarBndr oldCons _oldDeriving) <- reify (oldType td)
   [DataD newCxt newTypeName newTyVarBndr addedCons newDeriving] <- newType td
-  let rename n | n `elem` removedConstructors td = Nothing
-               | otherwise = nameMangler td n
-  let forwardCons = [(oldCon, rename (conName oldCon)) | oldCon <- oldCons]
+  let forwardCons = [(oldCon, nameMangler td (conName oldCon)) | oldCon <- oldCons]
       backwardCons = [(renameArgs oldTypeName newTypeName newCon, Just (conName oldCon)) |
                       oldCon <- oldCons,
-                      Just newCon <- [renameCon rename oldCon]] ++
+                      Just newCon <- [renameCon (nameMangler td) oldCon]] ++
                      [(addedCon, Nothing) | addedCon <- addedCons]
   return [DataD newCxt newTypeName newTyVarBndr (map fst backwardCons) newDeriving,
           SigD (mkName (forwardFunction td))
@@ -33,6 +31,10 @@ defineData [td@TypeDelta {}] = do
                  (ArrowT `AppT` (ArrowT `AppT` ConT newTypeName `AppT` ConT oldTypeName)
                          `AppT` (ArrowT `AppT` ConT newTypeName `AppT` ConT oldTypeName)),
           FunD (mkName (backwardFunction td)) (translateFun newTypeName backwardCons)]
+
+removeCons :: [Name] -> Name -> Maybe Name
+removeCons ns n | n `elem` ns = Nothing
+                | otherwise = Just n
 
 conName :: Con -> Name
 conName (NormalC n _) = n
