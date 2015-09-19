@@ -1,20 +1,24 @@
-{-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE ParallelListComp, TemplateHaskell #-}
 module Nanopass where
 
+import Control.Applicative
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 
-data TypeDelta =
-  TypeDelta { oldType :: Name,
+removeCons :: [Name] -> Name -> Maybe Name
+removeCons ns n | n `elem` ns = Nothing
+                | otherwise = Just n
+
+data RedefineType =
+  RedefineType { oldType :: Name,
               forwardFunction :: String,
               backwardFunction :: String,
               nameMangler :: Name -> Maybe Name,
-              newType :: Q [Dec] } |
-  TypeDeltaNop { noOpOldType :: Name, noOpNewType :: Name }
+              newType :: Q [Dec] }
 
--- TODO: redefineType
-defineData :: [TypeDelta] -> Q [Dec]
-defineData [td@TypeDelta {}] = do
+-- TODO: redefineTypes
+redefineTypes :: [RedefineType] -> Q [Dec]
+redefineTypes [td] = do
   TyConI (DataD _oldCxt oldTypeName _oldTyVarBndr oldCons _oldDeriving) <- reify (oldType td)
   [DataD newCxt newTypeName newTyVarBndr addedCons newDeriving] <- newType td
   let forwardCons = [(oldCon, nameMangler td (conName oldCon)) | oldCon <- oldCons]
@@ -22,19 +26,20 @@ defineData [td@TypeDelta {}] = do
                       oldCon <- oldCons,
                       Just newCon <- [renameCon (nameMangler td) oldCon]] ++
                      [(addedCon, Nothing) | addedCon <- addedCons]
+  a <- newName "a"
   return [DataD newCxt newTypeName newTyVarBndr (map fst backwardCons) newDeriving,
+          -- forall a. (Applicative a) => (old -> a new) -> old -> a new
           SigD (mkName (forwardFunction td))
-                 (ArrowT `AppT` (ArrowT `AppT` ConT oldTypeName `AppT` ConT newTypeName)
-                         `AppT` (ArrowT `AppT` ConT oldTypeName `AppT` ConT newTypeName)),
+               (ForallT [PlainTV a] [ClassP ''Applicative [VarT a]]
+                          (ArrowT `AppT` (ArrowT `AppT` ConT oldTypeName `AppT` (VarT a `AppT` ConT newTypeName))
+                                  `AppT` (ArrowT `AppT` ConT oldTypeName `AppT` (VarT a `AppT` ConT newTypeName)))),
           FunD (mkName (forwardFunction td)) (translateFun oldTypeName forwardCons),
+          -- forall a. (Applicative a) => (new -> a old) -> new -> a old
           SigD (mkName (backwardFunction td))
-                 (ArrowT `AppT` (ArrowT `AppT` ConT newTypeName `AppT` ConT oldTypeName)
-                         `AppT` (ArrowT `AppT` ConT newTypeName `AppT` ConT oldTypeName)),
+               (ForallT [PlainTV a] [ClassP ''Applicative [VarT a]]
+                          (ArrowT `AppT` (ArrowT `AppT` ConT newTypeName `AppT` (VarT a `AppT` ConT oldTypeName))
+                                  `AppT` (ArrowT `AppT` ConT newTypeName `AppT` (VarT a `AppT` ConT oldTypeName)))),
           FunD (mkName (backwardFunction td)) (translateFun newTypeName backwardCons)]
-
-removeCons :: [Name] -> Name -> Maybe Name
-removeCons ns n | n `elem` ns = Nothing
-                | otherwise = Just n
 
 conName :: Con -> Name
 conName (NormalC n _) = n
@@ -94,7 +99,7 @@ translate f (NormalC n ts, n') = Clause [ConP n (map (VarP . fst) args)] (Normal
   args = [g t i | (_, t) <- ts | i <- [(1 :: Integer) ..]]
   g t i | Just h <- f t = let name = mkName ("_arg" ++ show i) in (name, AppE (VarE h) (VarE name))
         | otherwise = let name = mkName ("_arg" ++ show i) in (name, VarE name)
-  body | Just n'' <- n' = foldl AppE (ConE n'') (map snd args)
+  body | Just n'' <- n' = foldl (\l r -> InfixE (Just l) (VarE '(<*>)) (Just r)) (VarE 'pure `AppE` ConE n'') (map snd args)
        | otherwise = VarE (mkName "error") `AppE` LitE (StringL "translation error")
 translate f (RecC n ts, n') = translate f (NormalC n (map (\(_, x, y) -> (x, y)) ts), n')
 translate f (InfixC t1 n t2, n') = translate f (NormalC n [t1, t2], n')
