@@ -32,14 +32,34 @@ typeDeltas 'forward 'backward [
 ]
 \end{code}
 
+For some types, the default traversal is incorrect.
+For example, the representations of \code{Set} and
+\code{Map} should not be naively transformed.
+
+
 \begin{code}
 typeDeltas 'forward 'backward [
   [t|forall a. E a|] :->:
     [r|E1, s/^E/T/i|]
     [d|data E' a = E3'|],
-  [t|Set E|] :~>: [t|Set E'|] [|setTransform|],
-  [t|Map E E|] :~>: [t|Map E' E|] [|mapTransform1|],
-  [t|Map E E|] :~>: [t|Map E' E'|] [|mapTransform2|]
+  [t|Set E|] :~>: [t|Set E'|] [|\f -> setTransform f|],
+  [t|Map E a|] :~>: [t|Map E' a|] [|\f -> mapTransformKeys f|],
+  [t|Map E E|] :~>: [t|Map E' E'|] [|\f -> mapTransformKeysAndValues f f|]
+]
+\end{code}
+
+An alternative to \code{[|\f -> mapTransformKeysAndValues f f|]}
+might be to allow the declaration of local names that can seen
+locally.
+
+\begin{code}
+typeDeltas 'forward 'backward [
+  'f :=: [t|forall a. E a|] 
+    [r|E1, s/^E/T/i|]
+    [d|data E' a = E3'|],
+  [t|Set E|] :~>: [t|Set E'|] [|setTransform f|],
+  [t|Map E a|] :~>: [t|Map E' a|] [|mapTransformKeys f|],
+  [t|Map E E|] :~>: [t|Map E' E'|] [|mapTransformKeysAndValues f f|]
 ]
 \end{code}
 
