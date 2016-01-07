@@ -1,5 +1,8 @@
-{-# LANGUAGE ParallelListComp, TemplateHaskell, GADTs #-}
+{-# LANGUAGE TemplateHaskell, GADTs, ScopedTypeVariables #-}
 module Nanopass where
+
+-- TODO: implement "backwards"
+-- TODO: copy the fixity of constructors
 
 import Control.Applicative
 import Control.Monad.RWS
@@ -8,14 +11,18 @@ import Data.Monoid
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax hiding (lift)
 
+--------
 -- User level syntax
+--------
 
 type ConFun = (Con, [Type]) -> Maybe (Con, [Type])
 
 data Delta where
   (:->:) :: Q Type -> ConFun -> Q Dec -> Delta
 
+--------
 -- Internal data types
+--------
 
 type M a = RWST R W S Q a
 
@@ -145,9 +152,9 @@ getNewName srcType dstType = do
     Nothing -> lift $ newName "go"
 
 
-------------------------
--- Worklist Functions --
-------------------------
+--------
+-- Worklist Functions
+--------
 
 -- Generates code for transforming a given type to another type
 generateFun :: Name -> Type -> Type -> M ()
@@ -160,10 +167,38 @@ generateFun' name srcType dstType = do
   --  name = \x -> case x of ...
   -- calls 'generateClause' for generating clauses of the 'case'
   error "unimplemented: generateFun'"
+  
+type Subst = Map.Map Name Type
 
-generateClause :: Name -> [Type] -> Name -> [Type] -> M (Pat, Exp)
-generateClause srcCon srcTypes dstCon dstTypes =
+applySubst :: Subst -> Type -> Type
+applySubst = error "unimplemented: applySubst"
+
+generateClause :: Con -> Subst -> Con -> Subst -> M Match
+generateClause srcCon srcSubst dstCon dstSubst = do
+  -- TODO: handle custom user-specified clauses
+
   -- return TH like the following:
   --  srcCon x1 x2 ... -> dstCon (f1 x1) (f2 x2) ...
   -- calls 'getFun' to find f1, f2, etc.
-  error "unimplemented: generateClause"
+  let NormalC srcConName srcStrictTypes = srcCon
+  let NormalC dstConName dstStrictTypes = dstCon
+  
+  let srcArgTypes :: [Type]
+      srcArgTypes = map (applySubst srcSubst. snd) srcStrictTypes
+
+  srcArgs :: [Name] <- mapM (\i -> lift $ newName $ "arg"++show i)
+                            (zipWith const [1..] srcArgTypes)
+
+  let generateApp :: Name -> Type -> Type -> M Exp
+      generateApp srcArg srcArgType dstArgType = do
+        funName <- getFun srcArgType dstArgType
+        return (AppE (VarE funName) (VarE srcArg))
+
+  let dstArgTypes :: [Type]
+      dstArgTypes = map (applySubst dstSubst. snd) dstStrictTypes
+
+  dstArgs :: [Exp] <- sequence (zipWith3 generateApp srcArgs srcArgTypes dstArgTypes)
+
+  let pat = ConP srcConName (map VarP srcArgs)
+      body = NormalB (foldl (AppE) (ConE dstConName) dstArgs)
+  return $ Match pat body [{-empty "where" block-}]
