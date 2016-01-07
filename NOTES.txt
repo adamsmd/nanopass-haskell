@@ -1,0 +1,14 @@
+
+Providing users with a way to specify names for generated functions means we
+basically need to create a binding form. This is tricky to do in Template
+Haskell because any reference to a name gets captured in the current scope.
+Non-existent names are errors. We could use a custom quasiquote to get our hands
+on the new names without that problem, but then the users will need to be able
+to use those names in arbitrary Haskell expressions (which we don't want to try
+to parse ourselves). We could use haskell-src-exts and haskell-src-meta to solve
+this problem.
+
+Workaround:
+
+var = varE . mkName
+foo = [| $(var "x") + 1 |]

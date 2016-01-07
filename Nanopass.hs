@@ -5,7 +5,7 @@ import Control.Applicative
 import Control.Monad.RWS
 import qualified Data.Map as Map
 import Language.Haskell.TH
-import Language.Haskell.TH.Syntax
+import Language.Haskell.TH.Syntax hiding (lift)
 
 -- User level syntax
 
@@ -21,10 +21,13 @@ type M a = RWST R W S Q a
 data R = R {
   -- Names for functions that the user supplies to us
   userFunctionsR :: Map.Map (Type{-srcType-}, Type{-dstType-}) Name
+  
+  -- Names for generated functions where the user specifies the name
+  namedFunctionsR :: Map.Map (Type{-srcType-}, Type{-dstType-}) Name
   }
   
 data W = W {
-  generatedImplementationsW :: [Dec]
+  generatedImplementationsW :: [Exp]
   }
 
 data S = S {
@@ -45,6 +48,12 @@ addWorklist :: Name -> Type -> Type -> M ()
 addWorklist name srcType dstType =
   modify (\s -> s { worklistS = name : (worklistS s) })
 
+-- returns the names of the functions that
+-- are supplied to 'forward' by the user
+getUserFun :: Type -> Type -> M (Maybe Name)
+getUserFun srcType dstType =
+  asks (Map.lookup (srcType, dstType) . userFunctionsR)
+
 {-
 addFun :: Name -> Type -> Type -> Dec -> M ()
 
@@ -58,60 +67,74 @@ getName = error "nameFor not implemented"
   -- return if found; otherwise, generate a new name, put it in namesS, call  and return that
 -}
 
+-- main entry point for user API
 typeDeltas :: [Delta] -> Q Dec
 typeDeltas deltas = do
-  -- put user written functions (u1, u2, u3) in the 'fun' list
-  --  i.e., addFun u1 u1SrcType u1DstType, etc.
-  -- put entry point functions (e1, e2, e3) in the worklist
-  --  i.e., addWorklist e1 e1SrcType e1DstType, etc.
-  
   error "typeDeltas not implemented" -- FIXME
+
+  -- put user written functions (u1, u2, u3) in the 'userFunctionsR' list
+  --  i.e., addFun u1 u1SrcType u1DstType, etc.
   
-  -- Generate the actual functions
+  -- put user specified names for generated functions in generatedNamesS
+  -- TODO
+
+  -- put entry point functions (e1, e2, e3) in the worklist
+  --  i.e., addWorklist e1 e1SrcType e1DstType, etc.  
+  
+  -- run the worklist to create the generated functions
+  -- We call generateFun in a worklist style algorithm.
+  -- The initial functions to generate in that worklist
+  -- are based on the entry points.
+
+  -- The worklist contains functions that should be generated.
   let loop = do r <- popWorklist
                 case r of
                   Nothing -> return ()
                   Just (name, srcType, dstType) ->
                     generateFun name srcType dstType >> loop
-  loop
-  -- Generate:
+      userFunctions = error "No user functions yet"
+      initialState = error "No initial state yet"
+  runRWST loop userFunctions initialState
+
+  -- return function that looks like:
   --   forward u1 u2 u3 = (e1, e2, e3) where
   --     ... results from calling generateFun ...
   -- 
 
--- We call generateFun in a worklist style algorithm.
--- The initial functions to generate in that worklist
--- are based on the entry points.
 
--- The worklist contains functions that should be generated.
-
--- 'generateFun' checks if there is already a user supplied
+-- 'getFun' checks if there is already a user supplied
 -- function and if so, does not put anything in the worklist.
-
 getFun :: Type -> Type -> M Name
 getFun srcType dstType = do
   userFun <- getUserFun srcType dstType
   case userFun of -- would prefer 'case<-'
     Just name -> return name
-    Nothing -> generateFunNoUser srcType dstType
+    Nothing -> getFunNoUser srcType dstType
 
--- 'generateFunNoUser' checks if there is already a generated
+-- 'getFunNoUser' checks if there is already a generated
 -- function and if so, does not put anything in the worklist.
-
 getFunNoUser :: Type -> Type -> M Name
 getFunNoUser srcType dstType = do
-  fun <- getGeneratedFun srcType dstType
-  case fun of
+  s <- get
+  case Map.lookup (srcType, dstType) (generatedNamesS s) of
     Just name -> return name
     Nothing -> do
-      name <- nameFor srcType dstType
+      name <- getName srcType dstType
+      put (s { generatedNamesS = Map.insert (srcType, dstType) name names })
       addWorklist name srcType dstType
       return name
 
+-- looks to see if the user specified a name
+-- otherwise, generates a new name
+getName :: Type -> Type -> M Name
+getName srcType dstType = do
+  s <- get
+  let names = generatedNamesS s
+  case Map.lookup (srcType, dstType) names of
+    Just name -> return name
+    Nothing -> lift $ newName "go"
 
 
-      fun <- generateFun' name srcType dstType
-      return (name, fun)
 
 -- Generates code for transforming a given type to another type
 generateFun :: Name -> Type -> Type -> M ()
