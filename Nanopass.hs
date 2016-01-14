@@ -104,6 +104,12 @@ typeDeltas deltas = do
   -- We call generateFun in a worklist style algorithm.
   -- The initial functions to generate in that worklist
   -- are based on the entry points.
+  
+  let oldType = [d| data ListInt = Cons Int ListInt | Nil |]
+  let newType = [d| data ListInt' = Cons' Int ListInt | Nil' |]
+  
+  let userFunctions = [mkName "u1"]
+      exportedFunctions = [([t| ListInt |], [t| ListInt' |])]
 
   -- The worklist contains functions that should be generated.
   let loop = do r <- popWorklist
@@ -111,14 +117,26 @@ typeDeltas deltas = do
                   Nothing -> return ()
                   Just (name, srcType, dstType) ->
                     generateFun name srcType dstType >> loop
-      userFunctions = error "No user functions yet"
-      initialState = error "No initial state yet"
-  ((), finalState, finalImpls) <- runRWST loop userFunctions initialState
+      initialReader = R {
+        userFunctionsR = userFunctions,
+        namedFunctionsR = Map.empty,
+        consR = [([t|ListInt|], [t|ListInt'|], [(NormalC 'Cons [] [ListInt, Int], NormalC 'Cons' [] [ListInt', Int])])]
+        }
+
+      initialState = S {
+        worklistS = [('go_ListInt_ListInt', [t|ListInt|], [t|ListInt'|])],
+        generatedNamesS = Map.empty
+       }
+  ((), finalState, finalImpls) <- runRWST loop initialReader initialState
 
   -- return function that looks like:
   --   forward u1 u2 u3 = (e1, e2, e3) where
   --     ... results from calling generateFun ...
   -- 
+  ValD (VarP name)
+    (LamE [VarP userFunctions] exportedFunctions
+      [Clause pat body (generatedImplementationsW finalImpls)])
+
   error "typeDeltas not implemented"
 
 -- 'getFun' checks if there is already a user supplied
