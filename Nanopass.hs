@@ -14,6 +14,10 @@ import Language.Haskell.TH.Syntax hiding (lift)
 
 import qualified Data.Map as Map
 
+import TestTypes
+
+import Debug.Trace
+
 --------
 -- User level syntax
 --------
@@ -89,7 +93,7 @@ getName = error "nameFor not implemented"
 -}
 
 -- main entry point for user API
-typeDeltas :: [Delta] -> Q Dec
+typeDeltas :: [Delta] -> Q [Dec]
 typeDeltas deltas = do
   -- put user written functions (u1, u2, u3) in the 'userFunctionsR' list
   --  i.e., addFun u1 u1SrcType u1DstType, etc.
@@ -105,11 +109,15 @@ typeDeltas deltas = do
   -- The initial functions to generate in that worklist
   -- are based on the entry points.
   
-  let oldType = [d| data ListInt = Cons Int ListInt | Nil |]
-  let newType = [d| data ListInt' = Cons' Int ListInt | Nil' |]
+--  let oldType = [d| data ListInt = Cons Int ListInt | Nil |]
+--  let newType = [d| data ListInt' = Cons' Int ListInt | Nil' |]
+  let name = mkName "function"
+  listInt <- [t|ListInt|]
+  listInt' <- [t|ListInt'|]
+  int <- [t|Int|]
   
-  let userFunctions = [mkName "u1"]
-      exportedFunctions = [([t| ListInt |], [t| ListInt' |])]
+  let userFunctions = Map.fromList [((listInt, listInt'), mkName "u1")]
+      exportedFunctions = [mkName "u1"]
 
   -- The worklist contains functions that should be generated.
   let loop = do r <- popWorklist
@@ -120,11 +128,11 @@ typeDeltas deltas = do
       initialReader = R {
         userFunctionsR = userFunctions,
         namedFunctionsR = Map.empty,
-        consR = [([t|ListInt|], [t|ListInt'|], [(NormalC 'Cons [] [ListInt, Int], NormalC 'Cons' [] [ListInt', Int])])]
+        consR = [(listInt, listInt', [(Just $ NormalC 'Cons [{-(NotStrict, int),-} (NotStrict, listInt)], Just $ NormalC 'Cons' [{-(NotStrict, int),-} (NotStrict, listInt')])])]
         }
 
       initialState = S {
-        worklistS = [('go_ListInt_ListInt', [t|ListInt|], [t|ListInt'|])],
+        worklistS = [(mkName "go_ListInt_ListInt'", listInt, listInt')],
         generatedNamesS = Map.empty
        }
   ((), finalState, finalImpls) <- runRWST loop initialReader initialState
@@ -133,11 +141,11 @@ typeDeltas deltas = do
   --   forward u1 u2 u3 = (e1, e2, e3) where
   --     ... results from calling generateFun ...
   -- 
-  ValD (VarP name)
-    (LamE [VarP userFunctions] exportedFunctions
-      [Clause pat body (generatedImplementationsW finalImpls)])
-
-  error "typeDeltas not implemented"
+  return $ [ValD (VarP name)
+    (NormalB
+      (LamE (map VarP (Map.elems userFunctions))
+        (LetE (generatedImplementationsW finalImpls)
+          (TupE (map VarE exportedFunctions))))) []]
 
 -- 'getFun' checks if there is already a user supplied
 -- function and if so, does not put anything in the worklist.
@@ -219,7 +227,7 @@ typeCons srcType dstType = do
   cons <- mapM go r
   case catMaybes cons of
     [cons] -> return cons
-    [] -> error "TODO: typeCons: check \"maybe\" mappings"
+    [] -> error $ "TODO: typeCons: check \"maybe\" mappings: " ++ show (srcType, dstType)
     _ -> error "TODO: typeCons: ambiguous mapping"
   where
   go (srcType', dstType', cons) = do
@@ -256,7 +264,7 @@ generateFun' name srcType dstType = do
   clauses <- mapM (uncurry generateClause) cons
 
   arg <- lift (newName "arg")
-  return [SigD name (srcType `AppT` dstType),
+  return [SigD name (ArrowT `AppT` srcType `AppT` dstType),
           FunD name [Clause [VarP arg] (NormalB (CaseE (VarE arg) (catMaybes clauses))) []]]
 
 bndrToType :: TyVarBndr -> Type
