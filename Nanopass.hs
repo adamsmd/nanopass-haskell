@@ -1,4 +1,4 @@
-{-# LANGUAGE TemplateHaskell, GADTs, ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell, GADTs, ScopedTypeVariables, TupleSections #-}
 module Nanopass where
 
 -- TODO: implement "backwards"
@@ -36,14 +36,14 @@ type M a = RWST R W S Q a
 data R = R {
   -- Names for functions that the user supplies to "forward"
   userFunctionsR :: Map.Map (Type{-srcType-}, Type{-dstType-}) Name,
-  
+
   -- Names for generated functions where the user specifies the name
   namedFunctionsR :: Map.Map (Type{-srcType-}, Type{-dstType-}) Name,
-  
+
   -- Mappings between constructors
   consR :: [(Type, Type, [(Maybe Con, Maybe Con)])]
   }
-  
+
 data W = W {
   generatedImplementationsW :: [Dec]
   }
@@ -92,9 +92,54 @@ getName = error "nameFor not implemented"
   -- return if found; otherwise, generate a new name, put it in namesS, call  and return that
 -}
 
+mkUserFunction :: (Maybe String, Q Type) -> Q ((Type, Type), Name)
+mkUserFunction (rawName, rawType) = do
+  name <- case rawName of
+            Just n -> return $ mkName n
+            Nothing -> newName "user"
+  t <- rawType
+  case t of
+    ArrowT `AppT` srcType `AppT` dstType ->
+      return ((srcType, dstType), name)
+
+mkNamedFunction :: (String, Q Type) -> Q ((Type, Type), Name)
+mkNamedFunction (rawName, rawType) = do
+  let name = mkName rawName
+  t <- rawType
+  case t of
+    ArrowT `AppT` srcType `AppT` dstType -> do
+      return ((srcType, dstType), name)
+
+mkCon :: (Q Type, Q Type, [(Maybe (Name, [Q Type]), Maybe (Name, [Q Type]))]) -> Q (Type, Type, [(Maybe Con, Maybe Con)])
+mkCon (rawSrcType, rawDstType, rawCons) = do
+  srcType <- rawSrcType
+  dstType <- rawDstType
+  let go1 (x1, x2) = do x1' <- go2 x1; x2' <- go2 x2; return (x1', x2')
+      go2 (Nothing) = return Nothing
+      go2 (Just x) = do x' <- go3 x; return (Just x')
+      go3 (x1, x2) = do x2' <- go4 x2; return (NormalC x1 (map (NotStrict,) x2'))
+      go4 xs = sequence xs
+  cons <- mapM go1 rawCons
+  return (srcType, dstType, cons)
+
+mkExport :: Q Type -> Q (Type, Type)
+mkExport rawExport = do
+  export <- rawExport
+  case export of
+    ArrowT `AppT` t1 `AppT` t2 ->
+      return (t1, t2)
+
 -- main entry point for user API
-typeDeltas :: [Delta] -> Q [Dec]
-typeDeltas deltas = do
+typeDeltas :: String -> [Q Type] -> [(Maybe String, Q Type)] -> [(String, Q Type)] -> [(Q Type, Q Type, [(Maybe (Name, [Q Type]), Maybe (Name, [Q Type]))])] -> Q [Dec]
+typeDeltas rawName rawExports rawUserFunctions rawNamedFunctions rawCons = do
+  let name = mkName rawName
+  userFunctions <- liftM Map.fromList $ mapM mkUserFunction rawUserFunctions
+  namedFunctions <- liftM Map.fromList $ mapM mkNamedFunction rawNamedFunctions
+  cons <- mapM mkCon rawCons
+  exportedFunctions <- mapM mkExport rawExports
+
+--typeDeltas :: [Delta] -> Q [Dec]
+--typeDeltas deltas = do
   -- put user written functions (u1, u2, u3) in the 'userFunctionsR' list
   --  i.e., addFun u1 u1SrcType u1DstType, etc.
   
@@ -109,15 +154,17 @@ typeDeltas deltas = do
   -- The initial functions to generate in that worklist
   -- are based on the entry points.
   
---  let oldType = [d| data ListInt = Cons Int ListInt | Nil |]
---  let newType = [d| data ListInt' = Cons' Int ListInt | Nil' |]
-  let name = mkName "function"
-  listInt <- [t|ListInt|]
-  listInt' <- [t|ListInt'|]
-  int <- [t|Int|]
-  
-  let userFunctions = Map.fromList [((listInt, listInt'), mkName "u1")]
-      exportedFunctions = [mkName "u1"]
+  let initialReader = R {
+        userFunctionsR = userFunctions,
+        namedFunctionsR = namedFunctions, --Map.empty,
+        consR = cons --[(listInt, listInt', [(Just $ NormalC 'Cons [{-(NotStrict, int),-} (NotStrict, listInt)], Just $ NormalC 'Cons' [{-(NotStrict, int),-} (NotStrict, listInt')])])]
+        }
+
+      initialState = S {
+        worklistS = [], --exportedFunctions, --[(mkName "go_ListInt_ListInt'", listInt, listInt')],
+        generatedNamesS = Map.empty
+       }
+
 
   -- The worklist contains functions that should be generated.
   let loop = do r <- popWorklist
@@ -125,17 +172,8 @@ typeDeltas deltas = do
                   Nothing -> return ()
                   Just (name, srcType, dstType) ->
                     generateFun name srcType dstType >> loop
-      initialReader = R {
-        userFunctionsR = userFunctions,
-        namedFunctionsR = Map.empty,
-        consR = [(listInt, listInt', [(Just $ NormalC 'Cons [{-(NotStrict, int),-} (NotStrict, listInt)], Just $ NormalC 'Cons' [{-(NotStrict, int),-} (NotStrict, listInt')])])]
-        }
-
-      initialState = S {
-        worklistS = [(mkName "go_ListInt_ListInt'", listInt, listInt')],
-        generatedNamesS = Map.empty
-       }
-  ((), finalState, finalImpls) <- runRWST loop initialReader initialState
+      m = do names <- mapM (uncurry getFunNoUser) exportedFunctions; loop; return names
+  (names, finalState, finalImpls) <- runRWST m initialReader initialState
 
   -- return function that looks like:
   --   forward u1 u2 u3 = (e1, e2, e3) where
@@ -145,7 +183,7 @@ typeDeltas deltas = do
     (NormalB
       (LamE (map VarP (Map.elems userFunctions))
         (LetE (generatedImplementationsW finalImpls)
-          (TupE (map VarE exportedFunctions))))) []]
+          (TupE (map VarE names))))) []]
 
 -- 'getFun' checks if there is already a user supplied
 -- function and if so, does not put anything in the worklist.
@@ -221,13 +259,13 @@ generateFun :: Name -> Type -> Type -> M ()
 generateFun name srcType dstType =
   generateFun' name srcType dstType >>= mapM_ addImplementation
   
-typeCons :: Type -> Type -> M [(Maybe Con, Maybe Con)]
+typeCons :: Type -> Type -> M (Maybe [(Maybe Con, Maybe Con)])
 typeCons srcType dstType = do
   r <- asks consR
   cons <- mapM go r
   case catMaybes cons of
-    [cons] -> return cons
-    [] -> error $ "TODO: typeCons: check \"maybe\" mappings: " ++ show (srcType, dstType)
+    [cons] -> return (Just cons)
+    [] -> return Nothing -- error $ "TODO: typeCons: check \"maybe\" mappings: " ++ show (srcType, dstType)
     _ -> error "TODO: typeCons: ambiguous mapping"
   where
   go (srcType', dstType', cons) = do
@@ -250,7 +288,6 @@ generateFun' name srcType dstType = do
 
   -- TODO: handle non-"data" types
   cons <- typeCons srcType dstType
-  
 
 {-
   (srcName, srcBndrs, srcCons, dstName, dstBndrs, dstCons) <- reifyTypes srcType dstType
@@ -260,12 +297,16 @@ generateFun' name srcType dstType = do
   (dstName, dstBndrs, dstCons) <- reifyHead dstType
   dstSubst <- unify dstType (foldl AppT (ConT dstName) (map bndrToType dstBndrs))
   -}
-  
-  clauses <- mapM (uncurry generateClause) cons
 
   arg <- lift (newName "arg")
+
+  body <- case cons of
+            Just cons' -> do clauses <- mapM (uncurry generateClause) cons'
+                             return (CaseE (VarE arg) (catMaybes clauses))
+            Nothing -> return (VarE arg)
+
   return [SigD name (ArrowT `AppT` srcType `AppT` dstType),
-          FunD name [Clause [VarP arg] (NormalB (CaseE (VarE arg) (catMaybes clauses))) []]]
+          FunD name [Clause [VarP arg] (NormalB body) []]]
 
 bndrToType :: TyVarBndr -> Type
 bndrToType (PlainTV n) = VarT n
