@@ -138,8 +138,6 @@ typeDeltas rawName rawExports rawUserFunctions rawNamedFunctions rawCons = do
   cons <- mapM mkCon rawCons
   exportedFunctions <- mapM mkExport rawExports
 
---typeDeltas :: [Delta] -> Q [Dec]
---typeDeltas deltas = do
   -- put user written functions (u1, u2, u3) in the 'userFunctionsR' list
   --  i.e., addFun u1 u1SrcType u1DstType, etc.
   
@@ -154,17 +152,12 @@ typeDeltas rawName rawExports rawUserFunctions rawNamedFunctions rawCons = do
   -- The initial functions to generate in that worklist
   -- are based on the entry points.
   
-  let initialReader = R {
+  let initialState = S { worklistS = [], generatedNamesS = Map.empty }
+      initialReader = R {
         userFunctionsR = userFunctions,
-        namedFunctionsR = namedFunctions, --Map.empty,
-        consR = cons --[(listInt, listInt', [(Just $ NormalC 'Cons [{-(NotStrict, int),-} (NotStrict, listInt)], Just $ NormalC 'Cons' [{-(NotStrict, int),-} (NotStrict, listInt')])])]
+        namedFunctionsR = namedFunctions,
+        consR = cons
         }
-
-      initialState = S {
-        worklistS = [], --exportedFunctions, --[(mkName "go_ListInt_ListInt'", listInt, listInt')],
-        generatedNamesS = Map.empty
-       }
-
 
   -- The worklist contains functions that should be generated.
   let loop = do r <- popWorklist
@@ -172,7 +165,9 @@ typeDeltas rawName rawExports rawUserFunctions rawNamedFunctions rawCons = do
                   Nothing -> return ()
                   Just (name, srcType, dstType) ->
                     generateFun name srcType dstType >> loop
-      m = do names <- mapM (uncurry getFunNoUser) exportedFunctions; loop; return names
+      m = do names <- mapM (uncurry getFunNoUser) exportedFunctions
+             loop
+             return names
   (names, finalState, finalImpls) <- runRWST m initialReader initialState
 
   -- return function that looks like:

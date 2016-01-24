@@ -2,8 +2,7 @@
 import Nanopass
 import TestTypes
 
-typeDeltas
-  "function" -- name
+typeDeltas "function" -- name
   [[t|ListInt -> ListInt'|]] -- exported
   [(Just "u1", [t|ListInt -> ListInt'|])] --userFunctionsR
   [("e1", [t|ListInt -> ListInt'|])] -- namedFunctionsR
